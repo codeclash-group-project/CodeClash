@@ -2,6 +2,7 @@ using AspNet.Security.OAuth.GitHub;
 using CodeClash.API.Middleware;
 using CodeClash.Application;
 using CodeClash.Infrastructure;
+using CodeClash.Infrastructure.Hubs;
 using CodeClash.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -20,6 +21,9 @@ var builder = WebApplication.CreateBuilder(args);
 // ── 1. Clean Architecture layers ─────────────────────────────────────────────
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+// ── SignalR ───────────────────────────────────────────────────────────────────
+builder.Services.AddSignalR();
 
 // ── Data Protection Key Persistence ───────────────────────────────────────────
 var homePath = Environment.GetEnvironmentVariable("HOME");
@@ -55,11 +59,21 @@ builder.Services.AddAuthentication(options =>
         ValidIssuer = jwtSettings["Issuer"],
         ValidAudience = jwtSettings["Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
-        ClockSkew = TimeSpan.Zero   // zero tolerance on token expiry
+        ClockSkew = TimeSpan.Zero,   // zero tolerance on token expiry
+        NameClaimType = System.Security.Claims.ClaimTypes.NameIdentifier // for SignalR UserIdentifier
     };
 
+    // Allow SignalR to read the JWT from the query string (required for WebSocket transport)
     options.Events = new JwtBearerEvents
     {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                context.Token = accessToken;
+            return Task.CompletedTask;
+        },
         OnChallenge = async context =>
         {
             context.HandleResponse();
@@ -284,5 +298,8 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// ── SignalR Hubs ──────────────────────────────────────────────────────────────
+app.MapHub<MatchHub>("/hubs/match");
 
 app.Run();
